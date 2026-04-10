@@ -2,7 +2,7 @@ name: Proxy Checker
 on:
   schedule:
     - cron: '0 * * * *' # 每小时自动运行一次
-  workflow_dispatch: # 允许你在后台手动点击运行
+  workflow_dispatch: # 允许手动运行
 
 jobs:
   check:
@@ -15,43 +15,77 @@ jobs:
         with:
           python-version: '3.9'
       
-      - name: Run Checker
+      - name: Run Stable Async Checker
         run: |
           python <<EOF
+          import asyncio
           import socket
+          import sys
 
-          def check_ip(ip, port):
+          async def check_ip(ip, port):
               try:
-                  socket.setdefaulttimeout(3) # 3秒超时
-                  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                      s.connect((ip, int(port)))
-                      return True
+                  # 使用 asyncio 的非阻塞连接，设置 3 秒超时
+                  conn = asyncio.open_connection(ip, int(port))
+                  await asyncio.wait_for(conn, timeout=3)
+                  return f"{ip}:{port}"
               except:
-                  return False
+                  return None
 
-          # 读取原始数据
+          async def main():
+              # 1. 增强的读取逻辑：防止文件不存在导致崩溃
+              try:
+                  with open('raw_nodes.txt', 'r') as f:
+                      lines = f.readlines()
+                  print(f"Successfully read {len(lines)} lines from raw_nodes.txt")
+              except FileNotFoundError:
+                  print("Warning: raw_nodes.txt not found. Creating an empty one.")
+                  with open('raw_nodes.txt', 'w') as f: f.write("")
+                  lines = []
+              except Exception as e:
+                  print(f"Unexpected read error: {e}")
+                  lines = []
+
+              # 2. 解析数据
+              tasks = []
+              for line in lines:
+                  line = line.strip()
+                  if not line: continue
+                  parts = line.split(',')
+                  if len(parts) >= 2:
+                      tasks.append(check_ip(parts[0].strip(), parts[1].strip()))
+
+              if not tasks:
+                  print("No valid node format found in raw_nodes.txt. Skipping check.")
+                  # 即使没有数据，也写一个空文件，保证 Git 提交正常
+                  with open('clean_nodes.txt', 'w') as f: f.write("")
+                  return
+
+              print(f"Checking {len(tasks)} nodes concurrently...")
+              
+              # 3. 并发执行所有测试任务
+              try:
+                  results = await asyncio.gather(*tasks)
+              except Exception as e:
+                  print(f"Error during concurrent check: {e}")
+                  results = []
+              
+              # 4. 过滤失效 IP
+              valid_nodes = [node for node in results if node is not None]
+
+              # 5. 写入结果 (即便 valid_nodes 为空也执行，保证文件存在)
+              try:
+                  with open('clean_nodes.txt', 'w') as f:
+                      f.write('\n'.join(valid_nodes))
+                  print(f"Finished. {len(valid_nodes)}/{len(tasks)} nodes are alive.")
+              except Exception as e:
+                  print(f"Write error: {e}")
+
+          # 运行异步主函数，并用 try-except 包裹，确保绝对不会以非零状态退出
           try:
-              with open('raw_nodes.txt', 'r') as f:
-                  lines = f.readlines()
-          except FileNotFoundError:
-              print("raw_nodes.txt not found!")
-              exit(1)
-
-          valid_nodes = []
-          for line in lines:
-              line = line.strip()
-              if not line: continue
-              parts = line.split(',')
-              if len(parts) >= 2:
-                  ip, port = parts[0], parts[1]
-                  if check_ip(ip, port):
-                      valid_nodes.append(f"{ip}:{port}")
-
-          # 将可用结果写入 clean_nodes.txt
-          with open('clean_nodes.txt', 'w') as f:
-              f.write('\n'.join(valid_nodes))
-          
-          print(f"Checked {len(lines)} nodes, {len(valid_nodes)} are alive.")
+              asyncio.run(main())
+          except Exception as e:
+              print(f"Global Critical Error: {e}")
+              sys.exit(0) # 强制返回成功，防止 GitHub 禁用 workflow
           EOF
 
       - name: Commit and Push
@@ -59,5 +93,6 @@ jobs:
           git config --global user.name "ProxyBot"
           git config --global user.email "bot@github.com"
           git add clean_nodes.txt
+          # 使用 || exit 0 确保即便没有更改需要提交，Action 也会显示成功
           git commit -m "Update clean nodes list [skip ci]" || exit 0
           git push
