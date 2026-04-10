@@ -1,0 +1,25 @@
+name: Keep Alive
+on:
+  schedule:
+    - cron: '0 0 * * 0' # 每周日凌晨 0 点运行一次
+  workflow_dispatch: # 允许手动运行
+
+jobs:
+  keep_alive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Update README timestamp
+        run: |
+          # 在 README.md 文件的末尾追加一行当前时间
+          echo "Last heartbeat: $(date)" >> README.md
+          
+          # 配置 Git 用户信息
+          git config --global user.name "KeepAliveBot"
+          git config --global user.email "bot@github.com"
+          
+          # 提交并推送
+          git add README.md
+          git commit -m "Keep alive: update README heartbeat [skip ci]"
+          git push
