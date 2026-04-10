@@ -1,0 +1,63 @@
+name: Proxy Checker
+on:
+  schedule:
+    - cron: '0 * * * *' # 每小时自动运行一次
+  workflow_dispatch: # 允许你在后台手动点击运行
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Run Checker
+        run: |
+          python <<EOF
+          import socket
+
+          def check_ip(ip, port):
+              try:
+                  socket.setdefaulttimeout(3) # 3秒超时
+                  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                      s.connect((ip, int(port)))
+                      return True
+              except:
+                  return False
+
+          # 读取原始数据
+          try:
+              with open('raw_nodes.txt', 'r') as f:
+                  lines = f.readlines()
+          except FileNotFoundError:
+              print("raw_nodes.txt not found!")
+              exit(1)
+
+          valid_nodes = []
+          for line in lines:
+              line = line.strip()
+              if not line: continue
+              parts = line.split(',')
+              if len(parts) >= 2:
+                  ip, port = parts[0], parts[1]
+                  if check_ip(ip, port):
+                      valid_nodes.append(f"{ip}:{port}")
+
+          # 将可用结果写入 clean_nodes.txt
+          with open('clean_nodes.txt', 'w') as f:
+              f.write('\n'.join(valid_nodes))
+          
+          print(f"Checked {len(lines)} nodes, {len(valid_nodes)} are alive.")
+          EOF
+
+      - name: Commit and Push
+        run: |
+          git config --global user.name "ProxyBot"
+          git config --global user.email "bot@github.com"
+          git add clean_nodes.txt
+          git commit -m "Update clean nodes list [skip ci]" || exit 0
+          git push
